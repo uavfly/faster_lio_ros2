@@ -61,12 +61,20 @@
 #include <geometry_msgs/msg/vector3.hpp>
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include "preprocess.h"
-#include <ikd-Tree/ikd_Tree.h>
+#include "ivox/ivox3d.h"
 
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
 #define MAXN                (720000)
 #define PUBFRAME_PERIOD     (20)
+
+// #define IVOX_NODE_TYPE_PHC
+
+#ifdef IVOX_NODE_TYPE_PHC
+    using IVoxType = faster_lio::IVox<3, faster_lio::IVoxNodeType::PHC, PointType>;
+#else
+    using IVoxType = faster_lio::IVox<3, faster_lio::IVoxNodeType::DEFAULT, PointType>;
+#endif
 
 /*** Time Log Variables ***/
 double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_time = 0.0;
@@ -100,7 +108,6 @@ bool   scan_pub_en = false, dense_pub_en = false, scan_body_pub_en = false;
 bool    is_first_lidar = true;
 
 vector<vector<int>>  pointSearchInd_surf; 
-vector<BoxPointType> cub_needrm;
 vector<PointVector>  Nearest_Points; 
 vector<double>       extrinT(3, 0.0);
 vector<double>       extrinR(9, 0.0);
@@ -120,7 +127,8 @@ PointCloudXYZI::Ptr _featsArray;
 pcl::VoxelGrid<PointType> downSizeFilterSurf;
 pcl::VoxelGrid<PointType> downSizeFilterMap;
 
-KD_TREE<PointType> ikdtree;
+IVoxType::Options ivox_options_;
+std::shared_ptr<IVoxType> ivox_ = nullptr;                    // localmap in ivox
 
 V3F XAxisPoint_body(LIDAR_SP_LEN, 0.0, 0.0);
 V3F XAxisPoint_world(LIDAR_SP_LEN, 0.0, 0.0);
@@ -223,15 +231,17 @@ void RGBpointBodyLidarToIMU(PointType const * const pi, PointType * const po)
     po->intensity = pi->intensity;
 }
 
-void points_cache_collect()
+/* void points_cache_collect()
 {
     PointVector points_history;
     ikdtree.acquire_removed_points(points_history);
     // for (int i = 0; i < points_history.size(); i++) _featsArray->push_back(points_history[i]);
-}
+} */
 
-BoxPointType LocalMap_Points;
+// BoxPointType LocalMap_Points;
 bool Localmap_Initialized = false;
+
+/* 
 void lasermap_fov_segment()
 {
     cub_needrm.clear();
@@ -278,7 +288,7 @@ void lasermap_fov_segment()
     double delete_begin = omp_get_wtime();
     if(cub_needrm.size() > 0) kdtree_delete_counter = ikdtree.Delete_Point_Boxes(cub_needrm);
     kdtree_delete_time = omp_get_wtime() - delete_begin;
-}
+} */
 
 void standard_pcl_cbk(const sensor_msgs::msg::PointCloud2::UniquePtr msg) 
 {
@@ -434,54 +444,37 @@ bool sync_packages(MeasureGroup &meas)
     return true;
 }
 
-int process_increments = 0;
-void map_incremental()
-{
-    PointVector PointToAdd;
-    PointVector PointNoNeedDownsample;
-    PointToAdd.reserve(feats_down_size);
-    PointNoNeedDownsample.reserve(feats_down_size);
-    for (int i = 0; i < feats_down_size; i++)
-    {
-        /* transform to world frame */
-        pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
+void MapIncremental() {
+    PointVector points_to_add;
+    int cur_pts = feats_down_world->size();
+    points_to_add.reserve(cur_pts);
+
+    for (size_t i = 0; i < cur_pts; ++i) {
         /* decide if need add to map */
-        if (!Nearest_Points[i].empty() && flg_EKF_inited)
-        {
+        PointType &point_world = feats_down_world->points[i];
+        if (!Nearest_Points[i].empty()) {
             const PointVector &points_near = Nearest_Points[i];
+
+            Eigen::Vector3f center =
+                ((point_world.getVector3fMap() / filter_size_map_min).array().floor() + 0.5) * filter_size_map_min;
             bool need_add = true;
-            BoxPointType Box_of_Point;
-            PointType downsample_result, mid_point; 
-            mid_point.x = floor(feats_down_world->points[i].x/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
-            mid_point.y = floor(feats_down_world->points[i].y/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
-            mid_point.z = floor(feats_down_world->points[i].z/filter_size_map_min)*filter_size_map_min + 0.5 * filter_size_map_min;
-            float dist  = calc_dist(feats_down_world->points[i],mid_point);
-            if (fabs(points_near[0].x - mid_point.x) > 0.5 * filter_size_map_min && fabs(points_near[0].y - mid_point.y) > 0.5 * filter_size_map_min && fabs(points_near[0].z - mid_point.z) > 0.5 * filter_size_map_min){
-                PointNoNeedDownsample.push_back(feats_down_world->points[i]);
-                continue;
-            }
-            for (int readd_i = 0; readd_i < NUM_MATCH_POINTS; readd_i ++)
-            {
-                if (points_near.size() < NUM_MATCH_POINTS) break;
-                if (calc_dist(points_near[readd_i], mid_point) < dist)
-                {
+            for (int readd_i = 0; readd_i < points_near.size(); readd_i++) {
+                Eigen::Vector3f dis_2_center = points_near[readd_i].getVector3fMap() - center;
+                if (fabs(dis_2_center.x()) < 0.5 * filter_size_map_min &&
+                    fabs(dis_2_center.y()) < 0.5 * filter_size_map_min &&
+                    fabs(dis_2_center.z()) < 0.5 * filter_size_map_min) {
                     need_add = false;
                     break;
                 }
             }
-            if (need_add) PointToAdd.push_back(feats_down_world->points[i]);
-        }
-        else
-        {
-            PointToAdd.push_back(feats_down_world->points[i]);
+            if (need_add) {
+                points_to_add.emplace_back(point_world);
+            }
+        } else {
+            points_to_add.emplace_back(point_world);
         }
     }
-
-    double st_time = omp_get_wtime();
-    add_point_size = ikdtree.Add_Points(PointToAdd, true);
-    ikdtree.Add_Points(PointNoNeedDownsample, false); 
-    add_point_size = PointToAdd.size() + PointNoNeedDownsample.size();
-    kdtree_incremental_time = omp_get_wtime() - st_time;
+    ivox_->AddPoints(points_to_add);
 }
 
 PointCloudXYZI::Ptr pcl_wait_pub(new PointCloudXYZI());
@@ -514,6 +507,8 @@ void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Share
     /* 1. make sure you have enough memories
     /* 2. noted that pcd save will influence the real-time performences **/
     /*
+
+    */
     if (pcd_save_en)
     {
         int size = feats_undistort->points.size();
@@ -526,7 +521,8 @@ void publish_frame_world(rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::Share
                                 &laserCloudWorld->points[i]);
         }
         *pcl_wait_save += *laserCloudWorld;
-
+    }
+        /*
         static int scan_wait_num = 0;
         scan_wait_num ++;
         if (pcl_wait_save->size() > 0 && pcd_save_interval > 0  && scan_wait_num >= pcd_save_interval)
@@ -706,8 +702,8 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
         if (ekfom_data.converge)
         {
             /** Find the closest surfaces in the map **/
-            ikdtree.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, pointSearchSqDis);
-            point_selected_surf[i] = points_near.size() < NUM_MATCH_POINTS ? false : pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5 ? false : true;
+            ivox_->GetClosestPoint(point_world, points_near, NUM_MATCH_POINTS);
+            point_selected_surf[i] = points_near.size() < NUM_MATCH_POINTS ? false : true;
         }
 
         if (!point_selected_surf[i]) continue;
@@ -961,8 +957,16 @@ private:
         {
             if (flg_first_scan)
             {
+                ivox_ = std::make_shared<IVoxType>(ivox_options_);
                 first_lidar_time = Measures.lidar_beg_time;
                 p_imu->first_lidar_time = first_lidar_time;
+                p_imu->Process(Measures, kf, feats_undistort);
+                state_point = kf.get_x();
+                feats_down_body->resize(feats_undistort->size());
+                for (int i = 0; i < feats_undistort->size(); i++) {
+                    pointBodyToWorld(&feats_undistort->points[i], &feats_down_body->points[i]);
+                }
+                ivox_->AddPoints(feats_down_body->points);
                 flg_first_scan = false;
                 return;
             }
@@ -989,7 +993,7 @@ private:
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
             /*** Segment the map in lidar FOV ***/
-            lasermap_fov_segment();
+            // lasermap_fov_segment();
 
             /*** downsample the feature points in a scan ***/
             downSizeFilterSurf.setInputCloud(feats_undistort);
@@ -997,7 +1001,8 @@ private:
             t1 = omp_get_wtime();
             feats_down_size = feats_down_body->points.size();
             /*** initialize the map kdtree ***/
-            if(ikdtree.Root_Node == nullptr)
+
+            /* if(ikdtree.Root_Node == nullptr)
             {
                 RCLCPP_INFO(this->get_logger(), "Initialize the map kdtree");
                 if(feats_down_size > 5)
@@ -1014,7 +1019,8 @@ private:
             }
             int featsFromMapNum = ikdtree.validnum();
             kdtree_size_st = ikdtree.size();
-            
+             */
+
             // cout<<"[ mapping ]: In num: "<<feats_undistort->points.size()<<" downsamp "<<feats_down_size<<" Map num: "<<featsFromMapNum<<"effect num:"<<effct_feat_num<<endl;
 
             /*** ICP and iterated Kalman filter update ***/
@@ -1031,13 +1037,14 @@ private:
             fout_pre<<setw(20)<<Measures.lidar_beg_time - first_lidar_time<<" "<<euler_cur.transpose()<<" "<< state_point.pos.transpose()<<" "<<ext_euler.transpose() << " "<<state_point.offset_T_L_I.transpose()<< " " << state_point.vel.transpose() \
             <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<< endl;
 
-            if(0) // If you need to see map point, change to "if(1)"
+            /*  if(0) // If you need to see map point, change to "if(1)"
             {
                 PointVector ().swap(ikdtree.PCL_Storage);
                 ikdtree.flatten(ikdtree.Root_Node, ikdtree.PCL_Storage, NOT_RECORD);
                 featsFromMap->clear();
                 featsFromMap->points = ikdtree.PCL_Storage;
             }
+            */
 
             pointSearchInd_surf.resize(feats_down_size);
             Nearest_Points.resize(feats_down_size);
@@ -1063,9 +1070,9 @@ private:
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped_, tf_broadcaster_);
 
-            /*** add the feature points to map kdtree ***/
+            /*** add the feature points to map ivox ***/
             t3 = omp_get_wtime();
-            map_incremental();
+            MapIncremental();
             t5 = omp_get_wtime();
             
             /******* Publish points *******/
@@ -1079,7 +1086,7 @@ private:
             if (runtime_pos_log)
             {
                 frame_num ++;
-                kdtree_size_end = ikdtree.size();
+                kdtree_size_end = ivox_->NumPoints();
                 aver_time_consu = aver_time_consu * (frame_num - 1) / frame_num + (t5 - t0) / frame_num;
                 aver_time_icp = aver_time_icp * (frame_num - 1)/frame_num + (t_update_end - t_update_start) / frame_num;
                 aver_time_match = aver_time_match * (frame_num - 1)/frame_num + (match_time)/frame_num;

@@ -6,9 +6,10 @@
 #define FASTER_LIO_IVOX3D_H
 
 #include <glog/logging.h>
-#include <execution>
+// #include <execution>
 #include <list>
 #include <thread>
+#include <unordered_map>
 
 #include "eigen_types.h"
 #include "ivox3d_node.hpp"
@@ -90,16 +91,24 @@ class IVox {
     /// get statistics of the points
     std::vector<float> StatGridPoints() const;
 
+    /// get all of the points
+    void GetAllPoints(PointVector& all_points) const;
+
+    std::unordered_map<KeyType, typename std::list<std::pair<KeyType, NodeType>>::iterator, hash_vec<dim>>
+        grids_map_;   
+    KeyType Pos2Grid(const PtType& pt) const;
+    KeyType Pos2Grid_(const PtType& pt, const double &defined_res) const;
+
    private:
     /// generate the nearby grids according to the given options
     void GenerateNearbyGrids();
 
     /// position to grid
-    KeyType Pos2Grid(const PtType& pt) const;
+    // KeyType Pos2Grid(const PtType& pt) const;
 
     Options options_;
-    std::unordered_map<KeyType, typename std::list<std::pair<KeyType, NodeType>>::iterator, hash_vec<dim>>
-        grids_map_;                                        // voxel hash map
+    // std::unordered_map<KeyType, typename std::list<std::pair<KeyType, NodeType>>::iterator, hash_vec<dim>>
+        // grids_map_;                                        // voxel hash map
     std::list<std::pair<KeyType, NodeType>> grids_cache_;  // voxel cache
     std::vector<KeyType> nearby_grids_;                    // nearbys
 };
@@ -230,34 +239,31 @@ void IVox<dim, node_type, PointType>::GenerateNearbyGrids() {
                          KeyType(-1, 1, 1),  KeyType(1, -1, 1),  KeyType(1, 1, -1),  KeyType(-1, -1, 1),
                          KeyType(-1, 1, -1), KeyType(1, -1, -1), KeyType(-1, -1, -1)};
     } else {
-        LOG(ERROR) << "Unknown nearby_type!";
+        // LOG(ERROR) << "Unknown nearby_type!";
     }
 }
 
 template <int dim, IVoxNodeType node_type, typename PointType>
 bool IVox<dim, node_type, PointType>::GetClosestPoint(const PointVector& cloud, PointVector& closest_cloud) {
     std::vector<size_t> index(cloud.size());
-    for (int i = 0; i < cloud.size(); ++i) {
-        index[i] = i;
-    }
+    
     closest_cloud.resize(cloud.size());
 
-    std::for_each(std::execution::par_unseq, index.begin(), index.end(), [&cloud, &closest_cloud, this](size_t idx) {
+    for (int i = 0; i < cloud.size(); ++i) {
         PointType pt;
-        if (GetClosestPoint(cloud[idx], pt)) {
-            closest_cloud[idx] = pt;
+        if (GetClosestPoint(cloud[i], pt)) {
+            closest_cloud[i] = pt;
         } else {
-            closest_cloud[idx] = PointType();
+            closest_cloud[i] = PointType();
         }
-    });
+    };
     return true;
 }
 
 template <int dim, IVoxNodeType node_type, typename PointType>
 void IVox<dim, node_type, PointType>::AddPoints(const PointVector& points_to_add) {
-    std::for_each(std::execution::unseq, points_to_add.begin(), points_to_add.end(), [this](const auto& pt) {
-        auto key = Pos2Grid(ToEigen<float, dim>(pt));
-
+    for(size_t i = 0; i<points_to_add.size(); i++) {
+        auto key = Pos2Grid(Eigen::Matrix<float, dim, 1>(points_to_add[i].x, points_to_add[i].y, points_to_add[i].z));
         auto iter = grids_map_.find(key);
         if (iter == grids_map_.end()) {
             PointType center;
@@ -266,23 +272,28 @@ void IVox<dim, node_type, PointType>::AddPoints(const PointVector& points_to_add
             grids_cache_.push_front({key, NodeType(center, options_.resolution_)});
             grids_map_.insert({key, grids_cache_.begin()});
 
-            grids_cache_.front().second.InsertPoint(pt);
+            grids_cache_.front().second.InsertPoint(points_to_add[i]);
 
             if (grids_map_.size() >= options_.capacity_) {
                 grids_map_.erase(grids_cache_.back().first);
                 grids_cache_.pop_back();
             }
         } else {
-            iter->second->second.InsertPoint(pt);
+            iter->second->second.InsertPoint(points_to_add[i]);
             grids_cache_.splice(grids_cache_.begin(), grids_cache_, iter->second);
             grids_map_[key] = grids_cache_.begin();
         }
-    });
+    }
 }
 
 template <int dim, IVoxNodeType node_type, typename PointType>
 Eigen::Matrix<int, dim, 1> IVox<dim, node_type, PointType>::Pos2Grid(const IVox::PtType& pt) const {
-    return (pt * options_.inv_resolution_).array().round().template cast<int>();
+    return (pt * options_.inv_resolution_).array().floor().template cast<int>();
+}
+
+template <int dim, IVoxNodeType node_type, typename PointType>
+Eigen::Matrix<int, dim, 1> IVox<dim, node_type, PointType>::Pos2Grid_(const IVox::PtType& pt, const double &defined_res) const {
+    return (pt / defined_res).array().floor().template cast<int>();
 }
 
 template <int dim, IVoxNodeType node_type, typename PointType>
@@ -300,6 +311,15 @@ std::vector<float> IVox<dim, node_type, PointType>::StatGridPoints() const {
     float ave = float(sum) / num;
     float stddev = num > 1 ? sqrt((float(sum_square) - num * ave * ave) / (num - 1)) : 0;
     return std::vector<float>{valid_num, ave, max, min, stddev};
+}
+
+template <int dim, IVoxNodeType node_type, typename PointType>
+size_t IVox<dim, node_type, PointType>::NumPoints() const {
+    size_t total = 0;
+    for (const auto& kv : grids_cache_) {
+        total += kv.second.Size();
+    }
+    return total;
 }
 
 }  // namespace faster_lio

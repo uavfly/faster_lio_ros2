@@ -18,7 +18,9 @@ inline double distance2(const PointT& pt1, const PointT& pt2) {
 // convert from pcl point to eigen
 template <typename T, int dim, typename PointType>
 inline Eigen::Matrix<T, dim, 1> ToEigen(const PointType& pt) {
+    cout << "line 21" << endl;
     return Eigen::Matrix<T, dim, 1>(pt.x, pt.y, pt.z);
+    cout << "line 23" << endl;
 }
 
 template <>
@@ -227,7 +229,7 @@ struct IVoxNodePhc<PointT, dim>::PhcCube {
 
     PhcCube(uint32_t index, const PointT& pt) { mean.add(pt); }
 
-    void AddPoint(const PointT& pt) { mean.add(pt); }
+    void AddPoint(PointT& pt) { mean.add(pt); }
 
     PointT GetPoint() const {
         PointT pt;
@@ -407,5 +409,4 @@ uint32_t IVoxNodePhc<PointT, dim>::CalculatePhcIndex(const PointT& pt) const {
     uint32_t idx = (uint32_t(tmp[0]) << 16) + (uint32_t(tmp[1]) << 8) + (uint32_t(tmp[2]));
     return idx;
 }
-
 }  // namespace faster_lio
