@@ -11,7 +11,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    package_path = get_package_share_directory('fast_lio')
+    package_path = get_package_share_directory('faster_lio')
     default_config_path = os.path.join(package_path, 'config')
     default_rviz_config_path = os.path.join(
         package_path, 'rviz', 'fastlio.rviz')
@@ -44,8 +44,8 @@ def generate_launch_description():
     )
 
     fast_lio_node = Node(
-        package='fast_lio',
-        executable='fastlio_mapping',
+        package='faster_lio',
+        executable='faster_lio_mapping',
         parameters=[PathJoinSubstitution([config_path, config_file]),
                     {'use_sim_time': use_sim_time}],
         output='screen'
