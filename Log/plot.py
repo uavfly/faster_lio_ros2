@@ -22,12 +22,12 @@ axs[2,1].set_title('ba')
 axs[3,1].set_title('Gravity')
 for i in range(1,4):
     for j in range(8):
-        axs[j%4, j/4].plot(time, a_pre[:,i+j*3],'.-', label=lab_pre[i])
-        axs[j%4, j/4].plot(time, a_out[:,i+j*3],'.-', label=lab_out[i])
+        axs[j%4, j//4].plot(time, a_pre[:,i+j*3],'.-', label=lab_pre[i])
+        axs[j%4, j//4].plot(time, a_out[:,i+j*3],'.-', label=lab_out[i])
 for j in range(8):
     # axs[j].set_xlim(386,389)
-    axs[j%4, j/4].grid()
-    axs[j%4, j/4].legend()
+    axs[j%4, j//4].grid()
+    axs[j%4, j//4].legend()
 plt.grid()
 #######for ikfom#######
 
