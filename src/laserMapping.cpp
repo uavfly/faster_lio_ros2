@@ -81,7 +81,7 @@ double kdtree_incremental_time = 0.0, kdtree_search_time = 0.0, kdtree_delete_ti
 double T1[MAXN], s_plot[MAXN], s_plot2[MAXN], s_plot3[MAXN], s_plot4[MAXN], s_plot5[MAXN], s_plot6[MAXN], s_plot7[MAXN], s_plot8[MAXN], s_plot9[MAXN], s_plot10[MAXN], s_plot11[MAXN];
 double match_time = 0, solve_time = 0, solve_const_H_time = 0;
 int    kdtree_size_st = 0, kdtree_size_end = 0, add_point_size = 0, kdtree_delete_counter = 0;
-bool   runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true;
+bool   runtime_pos_log = false, pcd_save_en = false, time_sync_en = false, extrinsic_est_en = true, path_en = true, first_runtime_log = true;
 /**************************/
 
 float res_last[100000] = {0.0};
@@ -904,6 +904,12 @@ public:
         string pos_log_dir = root_dir + "/Log/pos_log.txt";
         fp = fopen(pos_log_dir.c_str(),"w");
 
+        if(runtime_pos_log)
+        {
+            string log_dir = root_dir + "/Log/faster_lio_runtime_log.csv";
+            fp3 = fopen(log_dir.c_str(),"w");
+        }
+
         // ofstream fout_pre, fout_out, fout_dbg;
         fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"),ios::out);
         fout_out.open(DEBUG_FILE_DIR("mat_out.txt"),ios::out);
@@ -948,6 +954,10 @@ public:
         fout_out.close();
         fout_pre.close();
         fclose(fp);
+        if(runtime_pos_log)
+        {
+            fclose(fp3);
+        }
     }
 
 private:
@@ -1110,6 +1120,14 @@ private:
                 fout_out << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose()<< " " << ext_euler.transpose() << " "<<state_point.offset_T_L_I.transpose()<<" "<< state_point.vel.transpose() \
                 <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<<" "<<feats_undistort->points.size()<<endl;
                 dump_lio_state_to_log(fp);
+
+                if(first_runtime_log)
+                {
+                    first_runtime_log = false;
+                    fprintf(fp3,"IMU + Map + Input Downsample, ave match, ave solve, ave ICP, map incre, ave total, icp, construct H\n");
+                }
+                
+                fprintf(fp3,"%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f,%0.6f\n",t1-t0,aver_time_match,aver_time_solve,t3-t1,t5-t3,aver_time_consu,aver_time_icp, aver_time_const_H_time);
             }
         }
     }
@@ -1158,6 +1176,7 @@ private:
     double epsi[23] = {0.001};
 
     FILE *fp;
+    FILE *fp3;
     ofstream fout_pre, fout_out, fout_dbg;
 };
 
