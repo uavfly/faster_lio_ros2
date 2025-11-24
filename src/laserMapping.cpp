@@ -51,7 +51,8 @@
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
-#include <pcl/filters/voxel_grid.h>
+// #include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/approximate_voxel_grid.h>
 #include <pcl/io/pcd_io.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -124,8 +125,11 @@ PointCloudXYZI::Ptr laserCloudOri(new PointCloudXYZI(100000, 1));
 PointCloudXYZI::Ptr corr_normvect(new PointCloudXYZI(100000, 1));
 PointCloudXYZI::Ptr _featsArray;
 
-pcl::VoxelGrid<PointType> downSizeFilterSurf;
-pcl::VoxelGrid<PointType> downSizeFilterMap;
+// pcl::VoxelGrid<PointType> downSizeFilterSurf;
+// pcl::VoxelGrid<PointType> downSizeFilterMap;
+
+pcl::ApproximateVoxelGrid<PointType> downSizeFilterSurf;
+pcl::ApproximateVoxelGrid<PointType> downSizeFilterMap;
 
 IVoxType::Options ivox_options_;
 std::shared_ptr<IVoxType> ivox_ = nullptr;                    // localmap in ivox
