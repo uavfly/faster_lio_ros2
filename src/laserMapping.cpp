@@ -62,6 +62,7 @@
 #include <livox_ros_driver2/msg/custom_msg.hpp>
 #include "preprocess.h"
 #include "ivox/ivox3d.h"
+#include <OctVoxMap/OctVoxMapAdapter.hpp>
 
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
@@ -69,11 +70,16 @@
 #define PUBFRAME_PERIOD     (20)
 
 // #define IVOX_NODE_TYPE_PHC
+#define IVOX_NODE_TYPE_OCTVOXMAP
 
-#ifdef IVOX_NODE_TYPE_PHC
-    using IVoxType = faster_lio::IVox<3, faster_lio::IVoxNodeType::PHC, PointType>;
+#ifdef IVOX_NODE_TYPE_OCTVOXMAP
+    using IVoxType = OctVoxMapAdapter<3, 0, PointType>;
 #else
-    using IVoxType = faster_lio::IVox<3, faster_lio::IVoxNodeType::DEFAULT, PointType>;
+    #ifdef IVOX_NODE_TYPE_PHC
+        using IVoxType = faster_lio::IVox<3, faster_lio::IVoxNodeType::PHC, PointType>;
+    #else
+        using IVoxType = faster_lio::IVox<3, faster_lio::IVoxNodeType::DEFAULT, PointType>;
+    #endif
 #endif
 
 /*** Time Log Variables ***/
