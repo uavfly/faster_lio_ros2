@@ -18,9 +18,7 @@ inline double distance2(const PointT& pt1, const PointT& pt2) {
 // convert from pcl point to eigen
 template <typename T, int dim, typename PointType>
 inline Eigen::Matrix<T, dim, 1> ToEigen(const PointType& pt) {
-    cout << "line 21" << endl;
     return Eigen::Matrix<T, dim, 1>(pt.x, pt.y, pt.z);
-    cout << "line 23" << endl;
 }
 
 template <>

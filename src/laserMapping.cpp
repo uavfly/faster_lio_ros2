@@ -151,6 +151,17 @@ geometry_msgs::msg::PoseStamped msg_body_pose;
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
 
+// === High-rate odometry (shadow state) ===
+state_ikfom g_shadow_state;
+double g_shadow_time = -1.0;
+bool g_shadow_valid = false;
+sensor_msgs::msg::Imu::ConstSharedPtr g_last_imu_hr;
+rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr g_pub_odom_hr;
+double g_max_odom_freq = 100.0;
+double g_last_hr_pub_wall = 0.0;
+double g_mean_acc_norm = 1.0;
+bool g_mean_acc_norm_valid = false;
+
 void SigHandle(int sig)
 {
     flg_exit = true;
@@ -382,6 +393,77 @@ void imu_cbk(const sensor_msgs::msg::Imu::UniquePtr msg_in)
     }
 
     last_timestamp_imu = timestamp;
+
+    // === High-rate shadow state propagation ===
+    if (flg_EKF_inited && g_shadow_valid && g_last_imu_hr && g_mean_acc_norm_valid)
+    {
+        double dt = timestamp - g_shadow_time;
+        if (dt > 0 && dt < 0.05)
+        {
+            Eigen::Vector3d gyr_prev(g_last_imu_hr->angular_velocity.x,
+                                      g_last_imu_hr->angular_velocity.y,
+                                      g_last_imu_hr->angular_velocity.z);
+            Eigen::Vector3d acc_prev(g_last_imu_hr->linear_acceleration.x,
+                                      g_last_imu_hr->linear_acceleration.y,
+                                      g_last_imu_hr->linear_acceleration.z);
+            Eigen::Vector3d gyr_cur(msg->angular_velocity.x, msg->angular_velocity.y, msg->angular_velocity.z);
+            Eigen::Vector3d acc_cur(msg->linear_acceleration.x, msg->linear_acceleration.y, msg->linear_acceleration.z);
+
+            double acc_scale = G_m_s2 / g_mean_acc_norm;
+            acc_prev *= acc_scale;
+            acc_cur  *= acc_scale;
+
+            Eigen::Vector3d ba_g(g_shadow_state.ba[0], g_shadow_state.ba[1], g_shadow_state.ba[2]);
+            Eigen::Vector3d bg_g(g_shadow_state.bg[0], g_shadow_state.bg[1], g_shadow_state.bg[2]);
+
+            Eigen::Vector3d gyr_mid = 0.5 * (gyr_prev + gyr_cur) - bg_g;
+            Eigen::Vector3d acc_mid_unbias = 0.5 * (acc_prev + acc_cur) - ba_g;
+
+            SO3 rot_prev = g_shadow_state.rot;
+            g_shadow_state.rot = rot_prev * SO3::exp(gyr_mid * dt);
+
+            SO3 rot_mid = rot_prev * SO3::exp(gyr_mid * (0.5 * dt));
+            Eigen::Vector3d g_vec(g_shadow_state.grav[0], g_shadow_state.grav[1], g_shadow_state.grav[2]);
+            Eigen::Vector3d acc_world = rot_mid * acc_mid_unbias + g_vec;
+
+            g_shadow_state.pos[0] += g_shadow_state.vel[0] * dt + 0.5 * acc_world[0] * dt * dt;
+            g_shadow_state.pos[1] += g_shadow_state.vel[1] * dt + 0.5 * acc_world[1] * dt * dt;
+            g_shadow_state.pos[2] += g_shadow_state.vel[2] * dt + 0.5 * acc_world[2] * dt * dt;
+            g_shadow_state.vel[0] += acc_world[0] * dt;
+            g_shadow_state.vel[1] += acc_world[1] * dt;
+            g_shadow_state.vel[2] += acc_world[2] * dt;
+
+            g_shadow_time = timestamp;
+
+            double min_interval = 1.0 / g_max_odom_freq;
+            double now_wall = omp_get_wtime();
+            if (now_wall - g_last_hr_pub_wall >= min_interval)
+            {
+                nav_msgs::msg::Odometry odom_hr;
+                odom_hr.header.frame_id = "camera_init";
+                odom_hr.child_frame_id = "body";
+                odom_hr.header.stamp = get_ros_time(timestamp);
+                odom_hr.pose.pose.position.x = g_shadow_state.pos[0];
+                odom_hr.pose.pose.position.y = g_shadow_state.pos[1];
+                odom_hr.pose.pose.position.z = g_shadow_state.pos[2];
+                odom_hr.pose.pose.orientation.x = g_shadow_state.rot.coeffs()[0];
+                odom_hr.pose.pose.orientation.y = g_shadow_state.rot.coeffs()[1];
+                odom_hr.pose.pose.orientation.z = g_shadow_state.rot.coeffs()[2];
+                odom_hr.pose.pose.orientation.w = g_shadow_state.rot.coeffs()[3];
+                odom_hr.twist.twist.linear.x = g_shadow_state.vel[0];
+                odom_hr.twist.twist.linear.y = g_shadow_state.vel[1];
+                odom_hr.twist.twist.linear.z = g_shadow_state.vel[2];
+                g_pub_odom_hr->publish(odom_hr);
+                g_last_hr_pub_wall = now_wall;
+            }
+        }
+        else if (dt >= 0.05)
+        {
+            g_shadow_state = state_point;
+            g_shadow_time = timestamp;
+        }
+    }
+    g_last_imu_hr = msg;
 
     imu_buffer.push_back(msg);
     mtx_buffer.unlock();
@@ -829,6 +911,7 @@ public:
         this->declare_parameter<int>("pcd_save.interval", -1);
         this->declare_parameter<vector<double>>("mapping.extrinsic_T", vector<double>());
         this->declare_parameter<vector<double>>("mapping.extrinsic_R", vector<double>());
+        this->declare_parameter<double>("max_odom_freq", 100.0);
 
         this->get_parameter_or<bool>("publish.path_en", path_en, true);
         this->get_parameter_or<bool>("publish.effect_map_en", effect_pub_en, false);
@@ -865,6 +948,7 @@ public:
         this->get_parameter_or<int>("pcd_save.interval", pcd_save_interval, -1);
         this->get_parameter_or<vector<double>>("mapping.extrinsic_T", extrinT, vector<double>());
         this->get_parameter_or<vector<double>>("mapping.extrinsic_R", extrinR, vector<double>());
+        this->get_parameter_or<double>("max_odom_freq", g_max_odom_freq, 100.0);
 
         RCLCPP_INFO(this->get_logger(), "p_pre->lidar_type %d", p_pre->lidar_type);
 
@@ -928,6 +1012,8 @@ public:
         pubLaserCloudEffect_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cloud_effected", 20);
         pubLaserCloudMap_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/Laser_map", 20);
         pubOdomAftMapped_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry", 20);
+        pubOdomHighrate_ = this->create_publisher<nav_msgs::msg::Odometry>("/Odometry_highrate", 200);
+        g_pub_odom_hr = pubOdomHighrate_;
         pubPath_ = this->create_publisher<nav_msgs::msg::Path>("/path", 20);
         tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
@@ -957,6 +1043,8 @@ private:
         {
             if (flg_first_scan)
             {
+                ivox_options_.resolution_  = filter_size_map_min;
+                ivox_options_.nearby_type_ = IVoxType::NearbyType::NEARBY18;
                 ivox_ = std::make_shared<IVoxType>(ivox_options_);
                 first_lidar_time = Measures.lidar_beg_time;
                 p_imu->first_lidar_time = first_lidar_time;
@@ -1065,6 +1153,11 @@ private:
             geoQuat.z = state_point.rot.coeffs()[2];
             geoQuat.w = state_point.rot.coeffs()[3];
 
+            // === Sync shadow state to corrected EKF state ===
+            g_shadow_state = kf.get_x();
+            g_shadow_time = lidar_end_time;
+            g_shadow_valid = true;
+
             double t_update_end = omp_get_wtime();
 
             /******* Publish odometry *******/
@@ -1141,6 +1234,7 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudEffect_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pubLaserCloudMap_;
     rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomAftMapped_;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pubOdomHighrate_;
     rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr pubPath_;
     rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_pcl_pc_;
